@@ -2,8 +2,8 @@ name: Auto Export OpenSpeedcam (RU + KZ)
 
 on:
   schedule:
-    - cron: '0 4 * * *' # Автозапуск каждый день в 04:00 UTC
-  workflow_dispatch:      # Кнопка ручного запуска во вкладке Actions
+    - cron: '0 4 * * *'
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -20,8 +20,10 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
-        run: pip install requests beautifulsoup4
+      - name: Install Playwright and Chromium
+        run: |
+          pip install playwright
+          playwright install chromium
 
       - name: Run OpenSpeedcam export
         env:
