@@ -24,37 +24,75 @@ def parse_downloaded_file(file_path):
 
 
 def ensure_logged_in(page):
-    """Переходит напрямую на страницу входа и авторизуется."""
-    for login_path in ["/login", "/auth/login", "/signin"]:
-        page.goto(f"{BASE_URL}{login_path}", wait_until="networkidle", timeout=30000)
-        page.wait_for_timeout(1500)
-        if page.locator("input[type='password']").count() > 0:
-            break
+    """Открывает модальное окно входа Vuetify и авторизуется."""
+    page.goto(EXPORT_URL, wait_until="networkidle", timeout=60000)
+    page.wait_for_timeout(2500)
 
-    # Если прямая ссылка не открыла форму, пробуем открыть бургер-меню Vuetify
-    if page.locator("input[type='password']").count() == 0:
-        page.goto(EXPORT_URL, wait_until="networkidle", timeout=30000)
-        page.wait_for_timeout(1500)
-        burger = page.locator("button.v-toolbar__side-icon, .v-app-bar__nav-icon, header button").first
-        if burger.count() > 0 and burger.is_visible():
-            burger.click()
-            page.wait_for_timeout(1000)
-        login_item = page.locator("text=/Вход|Войти|Login/i").locator("visible=true").first
-        if login_item.count() > 0:
-            login_item.click()
+    # 1. Пробуем кликнуть по возможным кнопкам входа / профиля в шапке или меню
+    triggers = [
+        "button:has-text('Вход')",
+        "button:has-text('Войти')",
+        "button:has-text('Login')",
+        "a:has-text('Вход')",
+        "a:has-text('Войти')",
+        "header button:has(i)",
+        ".v-toolbar button",
+        ".v-app-bar button",
+    ]
+
+    for selector in triggers:
+        if page.locator("input[type='password']:visible").count() > 0:
+            break
+        loc = page.locator(selector)
+        for i in range(loc.count()):
+            el = loc.nth(i)
+            if el.is_visible():
+                try:
+                    el.click(timeout=1500)
+                    page.wait_for_timeout(1000)
+                    if page.locator("input[type='password']:visible").count() > 0:
+                        break
+                    # Если открылось боковое меню, ищем в нём пункт Вход / Войти
+                    menu_login = page.locator("text=/Вход|Войти|Login/i").locator("visible=true").first
+                    if menu_login.count() > 0:
+                        menu_login.click(timeout=1500)
+                        page.wait_for_timeout(1000)
+                        if page.locator("input[type='password']:visible").count() > 0:
+                            break
+                except Exception:
+                    pass
+
+    # 2. Если элемент "Вход" существует в DOM, но скрыт в свернутом дровере — кликаем через JS
+    if page.locator("input[type='password']:visible").count() == 0:
+        hidden_login = page.locator("text=/Вход|Войти|Login/i").first
+        if hidden_login.count() > 0:
+            hidden_login.evaluate("el => el.click()")
             page.wait_for_timeout(1500)
 
-    if page.locator("input[type='password']").count() == 0:
-        raise RuntimeError(f"Не удалось найти форму входа. Текущий URL: {page.url}")
+    # 3. Если всё ещё нет поля пароля — выводим в лог все кнопки и инпуты страницы для точной диагностики
+    if page.locator("input[type='password']:visible").count() == 0:
+        buttons_info = page.evaluate("""() => {
+            return Array.from(document.querySelectorAll('button, a, .v-list__tile')).map(el => ({
+                tag: el.tagName,
+                text: (el.innerText || '').trim().replace(/\\s+/g, ' '),
+                href: el.getAttribute('href') || '',
+                visible: !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
+            })).filter(x => x.text || x.href);
+        }""")
+        print("Диагностика элементов навигации на странице:", buttons_info[:25])
+        raise RuntimeError(f"Не удалось открыть окно входа. Текущий URL: {page.url}")
 
     print("2. Вводим логин и пароль...")
-    user_input = page.locator("input[type='text']:visible, input[type='email']:visible, input:not([type='password']):not([type='hidden']):visible").first
-    pass_input = page.locator("input[type='password']:visible").first
+    dialog_or_page = page.locator(".v-dialog--active, .v-dialog:visible").first
+    scope = dialog_or_page if dialog_or_page.count() > 0 else page
+
+    user_input = scope.locator("input:not([type='password']):not([type='hidden']):not([type='checkbox']):visible").first
+    pass_input = scope.locator("input[type='password']:visible").first
 
     user_input.fill(LOGIN)
     pass_input.fill(PASSWORD)
 
-    submit_btn = page.locator("button[type='submit']:visible, button:has-text('Войти'):visible, button:has-text('Вход'):visible, button:has-text('Login'):visible").first
+    submit_btn = scope.locator("button[type='submit']:visible, button:has-text('Войти'):visible, button:has-text('Вход'):visible, button:has-text('Login'):visible").first
     submit_btn.click()
     page.wait_for_load_state("networkidle", timeout=30000)
     page.wait_for_timeout(2500)
@@ -67,7 +105,6 @@ def select_vuetify_option(page, label_regex, option_regex):
         print(f"   [Предупреждение] Поле '{label_regex}' не найдено.")
         return
 
-    # Кликаем по родительскому контейнеру поля Vuetify (.v-input__slot)
     slot = label.locator("xpath=ancestor::div[contains(@class,'v-input__slot')][1]")
     if slot.count() > 0:
         slot.click()
@@ -76,7 +113,6 @@ def select_vuetify_option(page, label_regex, option_regex):
 
     page.wait_for_timeout(800)
 
-    # Ищем видимый пункт в открывшемся выпадающем меню Vuetify
     option = page.locator(f".v-menu__content--active >> text=/{option_regex}/i").first
     if option.count() == 0:
         option = page.locator(f"text=/{option_regex}/i").locator("visible=true").last
@@ -105,8 +141,9 @@ def run_export():
         ensure_logged_in(page)
 
         print("3. Переходим на страницу экспорта...")
-        page.goto(EXPORT_URL, wait_until="networkidle", timeout=60000)
-        page.wait_for_timeout(2500)
+        if "/export" not in page.url:
+            page.goto(EXPORT_URL, wait_until="networkidle", timeout=60000)
+            page.wait_for_timeout(2500)
 
         # Формат: Навител
         select_vuetify_option(page, "Формат", "Навител|Navitel")
