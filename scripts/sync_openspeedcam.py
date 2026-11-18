@@ -26,18 +26,13 @@ def parse_downloaded_file(file_path):
 def ensure_logged_in(page):
     """Открывает модальное окно входа Vuetify и авторизуется."""
     page.goto(EXPORT_URL, wait_until="networkidle", timeout=60000)
-    page.wait_for_timeout(2500)
+    page.wait_for_timeout(2000)
 
-    # 1. Пробуем кликнуть по возможным кнопкам входа / профиля в шапке или меню
     triggers = [
         "button:has-text('Вход')",
         "button:has-text('Войти')",
-        "button:has-text('Login')",
-        "a:has-text('Вход')",
-        "a:has-text('Войти')",
         "header button:has(i)",
         ".v-toolbar button",
-        ".v-app-bar button",
     ]
 
     for selector in triggers:
@@ -49,42 +44,30 @@ def ensure_logged_in(page):
             if el.is_visible():
                 try:
                     el.click(timeout=1500)
-                    page.wait_for_timeout(1000)
+                    page.wait_for_timeout(800)
                     if page.locator("input[type='password']:visible").count() > 0:
                         break
-                    # Если открылось боковое меню, ищем в нём пункт Вход / Войти
                     menu_login = page.locator("text=/Вход|Войти|Login/i").locator("visible=true").first
                     if menu_login.count() > 0:
                         menu_login.click(timeout=1500)
-                        page.wait_for_timeout(1000)
+                        page.wait_for_timeout(800)
                         if page.locator("input[type='password']:visible").count() > 0:
                             break
                 except Exception:
                     pass
 
-    # 2. Если элемент "Вход" существует в DOM, но скрыт в свернутом дровере — кликаем через JS
     if page.locator("input[type='password']:visible").count() == 0:
         hidden_login = page.locator("text=/Вход|Войти|Login/i").first
         if hidden_login.count() > 0:
             hidden_login.evaluate("el => el.click()")
-            page.wait_for_timeout(1500)
+            page.wait_for_timeout(1200)
 
-    # 3. Если всё ещё нет поля пароля — выводим в лог все кнопки и инпуты страницы для точной диагностики
     if page.locator("input[type='password']:visible").count() == 0:
-        buttons_info = page.evaluate("""() => {
-            return Array.from(document.querySelectorAll('button, a, .v-list__tile')).map(el => ({
-                tag: el.tagName,
-                text: (el.innerText || '').trim().replace(/\\s+/g, ' '),
-                href: el.getAttribute('href') || '',
-                visible: !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
-            })).filter(x => x.text || x.href);
-        }""")
-        print("Диагностика элементов навигации на странице:", buttons_info[:25])
         raise RuntimeError(f"Не удалось открыть окно входа. Текущий URL: {page.url}")
 
     print("2. Вводим логин и пароль...")
-    dialog_or_page = page.locator(".v-dialog--active, .v-dialog:visible").first
-    scope = dialog_or_page if dialog_or_page.count() > 0 else page
+    dialog = page.locator(".v-dialog--active, .v-dialog:visible").first
+    scope = dialog if dialog.count() > 0 else page
 
     user_input = scope.locator("input:not([type='password']):not([type='hidden']):not([type='checkbox']):visible").first
     pass_input = scope.locator("input[type='password']:visible").first
@@ -92,20 +75,28 @@ def ensure_logged_in(page):
     user_input.fill(LOGIN)
     pass_input.fill(PASSWORD)
 
-    submit_btn = scope.locator("button[type='submit']:visible, button:has-text('Войти'):visible, button:has-text('Вход'):visible, button:has-text('Login'):visible").first
+    submit_btn = scope.locator("button[type='submit']:visible, button:has-text('Войти'):visible, button:has-text('Вход'):visible").first
     submit_btn.click()
     page.wait_for_load_state("networkidle", timeout=30000)
-    page.wait_for_timeout(2500)
+    page.wait_for_timeout(2000)
 
 
 def select_vuetify_option(page, label_regex, option_regex):
-    """Выбирает значение в выпадающем списке Vuetify (v-select / v-autocomplete)."""
+    """Выбирает значение в выпадающем списке Vuetify 1.x (.menuable__content__active)."""
     label = page.locator(f"label:has-text('{label_regex}')").first
     if label.count() == 0:
-        print(f"   [Предупреждение] Поле '{label_regex}' не найдено.")
-        return
+        print(f"   [Инфо] Поле '{label_regex}' не найдено.")
+        return False
 
     slot = label.locator("xpath=ancestor::div[contains(@class,'v-input__slot')][1]")
+    # Проверяем, не выбрано ли уже нужное значение
+    current_val = slot.locator(".v-select__selection").first
+    if current_val.count() > 0:
+        txt = current_val.inner_text().strip()
+        if option_regex.split("|")[0].replace("\\", "") in txt:
+            print(f"   [Ок] В поле '{label_regex}' уже выбрано: {txt}")
+            return True
+
     if slot.count() > 0:
         slot.click()
     else:
@@ -113,15 +104,31 @@ def select_vuetify_option(page, label_regex, option_regex):
 
     page.wait_for_timeout(800)
 
-    option = page.locator(f".v-menu__content--active >> text=/{option_regex}/i").first
+    # Если это автокомплит с полем ввода — вводим текст для фильтрации
+    active_input = slot.locator("input[type='text']:visible").first
+    if active_input.count() > 0 and not active_input.is_disabled():
+        try:
+            active_input.fill(option_regex.split("|")[0].replace("\\", ""))
+            page.wait_for_timeout(800)
+        except Exception:
+            pass
+
+    # Ищем пункт строго внутри открытого меню Vuetify 1.x (.menuable__content__active)
+    menu = page.locator(".menuable__content__active").first
+    option = menu.locator(f".v-list__tile__title:has-text('{option_regex.split('|')[0].replace(chr(92), '')}')").first
     if option.count() == 0:
-        option = page.locator(f"text=/{option_regex}/i").locator("visible=true").last
+        option = menu.locator(f"text=/{option_regex}/i").first
 
     if option.count() > 0:
         option.click()
         page.wait_for_timeout(800)
-    else:
-        print(f"   [Предупреждение] Пункт '{option_regex}' не найден в списке '{label_regex}'.")
+        return True
+
+    # Закрываем меню клавишей Escape, если пункт не найден
+    page.keyboard.press("Escape")
+    page.wait_for_timeout(400)
+    print(f"   [Предупреждение] Пункт '{option_regex}' не найден в '{label_regex}'.")
+    return False
 
 
 def run_export():
@@ -143,29 +150,45 @@ def run_export():
         print("3. Переходим на страницу экспорта...")
         if "/export" not in page.url:
             page.goto(EXPORT_URL, wait_until="networkidle", timeout=60000)
-            page.wait_for_timeout(2500)
+            page.wait_for_timeout(2000)
 
         # Формат: Навител
         select_vuetify_option(page, "Формат", "Навител|Navitel")
 
         # Объекты с рейтингом от: 0 (не опасная)
-        select_vuetify_option(page, "рейтингом", "0 \\(не опасная\\)|0")
+        select_vuetify_option(page, "рейтингом", "0 (не опасная)|0")
 
-        # Чекбокс "Выбрать всё"
-        select_all = page.locator("label:has-text('Выбрать всё')").first
-        if select_all.count() > 0:
-            select_all.click()
-            page.wait_for_timeout(500)
+        # Чекбокс "Выбрать всё" (нажимаем, только если он не отмечен)
+        select_all_label = page.locator("label:has-text('Выбрать всё')").first
+        if select_all_label.count() > 0:
+            cb_container = select_all_label.locator("xpath=ancestor::div[contains(@class,'v-input--checkbox')][1]")
+            cb_input = cb_container.locator("input[type='checkbox']").first
+            if cb_input.count() > 0 and not cb_input.is_checked():
+                select_all_label.click()
+                page.wait_for_timeout(500)
 
         # Дата "Мобильные засады подтвержденные после"
         date_input = page.locator("input[type='date'], input[value*='202']").first
         if date_input.count() > 0:
-            date_input.fill(ambush_date)
+            try:
+                date_input.fill(ambush_date)
+            except Exception:
+                pass
+
+        # Выводим все доступные поля на странице экспорта для точного понимания выбора страны
+        labels_list = page.evaluate("""() => Array.from(document.querySelectorAll('label')).map(l => l.innerText.trim()).filter(Boolean)""")
+        print("   Доступные поля на странице:", labels_list[:15])
 
         # Экспортируем поочерёдно Россию и Казахстан
         for country in ["Россия", "Казахстан"]:
             print(f"4. Выбираем страну и скачиваем: {country}...")
-            select_vuetify_option(page, "Страна", country)
+            selected = select_vuetify_option(page, "Страна", country)
+            if not selected:
+                # Если выбор страны сделан через чипы/кнопки или дерево регионов
+                country_el = page.locator(f"text=/{country}/i").locator("visible=true").first
+                if country_el.count() > 0:
+                    country_el.click()
+                    page.wait_for_timeout(800)
 
             export_btn = page.locator("button:has-text('ЭКСПОРТ'), button:has-text('Экспорт')").locator("visible=true").first
             with page.expect_download(timeout=60000) as download_info:
