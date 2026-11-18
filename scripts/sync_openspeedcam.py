@@ -81,26 +81,32 @@ def ensure_logged_in(page):
     page.wait_for_timeout(2000)
 
 
-def check_vuetify_checkbox(page, label_text):
-    """Находит чекбокс Vuetify по тексту <label> и отмечает его, если он ещё не отмечен."""
-    label = page.locator(f"label:has-text('{label_text}')").first
-    if label.count() == 0:
-        print(f"   [Предупреждение] Чекбокс '{label_text}' не найден.")
+def check_vuetify_checkbox_dom(page, label_text):
+    """Отмечает чекбокс Vuetify напрямую через DOM-событие, даже если аккордеон свёрнут."""
+    result = page.evaluate("""(targetText) => {
+        const labels = Array.from(document.querySelectorAll('label'));
+        const label = labels.find(l => (l.innerText || '').includes(targetText));
+        if (!label) return { found: false };
+
+        const container = label.closest('.v-input--checkbox') || label.parentElement;
+        const input = container ? container.querySelector('input[type="checkbox"]') : null;
+
+        if (input) {
+            if (!input.checked) {
+                input.click();
+            }
+            return { found: true, checked: input.checked, text: label.innerText.trim() };
+        }
+        label.click();
+        return { found: true, checked: true, text: label.innerText.trim() };
+    }""", label_text)
+
+    if not result.get("found"):
+        print(f"   [Предупреждение] Чекбокс '{label_text}' не найден в DOM.")
         return False
 
-    label.scroll_into_view_if_needed()
-    cb_container = label.locator("xpath=ancestor::div[contains(@class,'v-input--checkbox')][1]")
-    cb_input = cb_container.locator("input[type='checkbox']").first
-
-    if cb_input.count() > 0:
-        if not cb_input.is_checked():
-            label.click(force=True)
-            page.wait_for_timeout(400)
-        print(f"   [Ок] Отмечен чекбокс: {label.inner_text().strip()}")
-        return True
-
-    label.click(force=True)
     page.wait_for_timeout(400)
+    print(f"   [Ок] Чекбокс '{result.get('text')}': checked={result.get('checked')}")
     return True
 
 
@@ -124,13 +130,13 @@ def run_export():
             page.goto(EXPORT_URL, wait_until="networkidle", timeout=60000)
             page.wait_for_timeout(2000)
 
-        # 1. Отмечаем страны: Россия (RUS) и Казахстан (KAZ)
+        # 1. Отмечаем страны: Россия (RUS) и Казахстан (KAZ) напрямую в DOM
         print("4. Выбираем страны: Россия и Казахстан...")
-        check_vuetify_checkbox(page, "Россия (RUS)")
-        check_vuetify_checkbox(page, "Казахстан (KAZ)")
+        check_vuetify_checkbox_dom(page, "Россия (RUS)")
+        check_vuetify_checkbox_dom(page, "Казахстан (KAZ)")
 
         # 2. Проверяем, что "Выбрать всё" отмечено
-        check_vuetify_checkbox(page, "Выбрать всё")
+        check_vuetify_checkbox_dom(page, "Выбрать всё")
 
         # 3. Устанавливаем дату "Мобильные засады подтвержденные после" (1 год назад)
         date_input = page.locator("input[type='date'], input[value*='202']").first
@@ -141,12 +147,14 @@ def run_export():
             except Exception:
                 pass
 
-        # 4. Ждём, пока кнопка ЭКСПОРТ станет активной (enabled), и скачиваем базу
+        # 4. Ждём, пока кнопка ЭКСПОРТ разблокируется, и скачиваем файл
         print("5. Нажимаем ЭКСПОРТ и ждём файл...")
-        export_btn = page.locator("button:has-text('ЭКСПОРТ'), button:has-text('Экспорт')").locator("visible=true").first
-        export_btn.wait_for(state="visible", timeout=15000)
-        page.wait_for_timeout(800)
+        page.wait_for_function("""() => {
+            const btn = Array.from(document.querySelectorAll('button')).find(b => /ЭКСПОРТ/i.test(b.innerText || ''));
+            return btn && !btn.disabled;
+        }""", timeout=15000)
 
+        export_btn = page.locator("button:has-text('ЭКСПОРТ'), button:has-text('Экспорт')").locator("visible=true").first
         with page.expect_download(timeout=90000) as download_info:
             export_btn.click()
 
