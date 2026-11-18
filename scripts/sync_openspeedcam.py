@@ -81,59 +81,31 @@ def ensure_logged_in(page):
     page.wait_for_timeout(2000)
 
 
-def select_vuetify_option(page, label_regex, option_regex):
-    """Выбирает значение в выпадающем списке Vuetify 1.x (.menuable__content__active)."""
-    label = page.locator(f"label:has-text('{label_regex}')").first
+def check_vuetify_checkbox(page, label_text):
+    """Находит чекбокс Vuetify по тексту <label> и отмечает его, если он ещё не отмечен."""
+    label = page.locator(f"label:has-text('{label_text}')").first
     if label.count() == 0:
-        print(f"   [Инфо] Поле '{label_regex}' не найдено.")
+        print(f"   [Предупреждение] Чекбокс '{label_text}' не найден.")
         return False
 
-    slot = label.locator("xpath=ancestor::div[contains(@class,'v-input__slot')][1]")
-    # Проверяем, не выбрано ли уже нужное значение
-    current_val = slot.locator(".v-select__selection").first
-    if current_val.count() > 0:
-        txt = current_val.inner_text().strip()
-        if option_regex.split("|")[0].replace("\\", "") in txt:
-            print(f"   [Ок] В поле '{label_regex}' уже выбрано: {txt}")
-            return True
+    label.scroll_into_view_if_needed()
+    cb_container = label.locator("xpath=ancestor::div[contains(@class,'v-input--checkbox')][1]")
+    cb_input = cb_container.locator("input[type='checkbox']").first
 
-    if slot.count() > 0:
-        slot.click()
-    else:
-        label.click(force=True)
-
-    page.wait_for_timeout(800)
-
-    # Если это автокомплит с полем ввода — вводим текст для фильтрации
-    active_input = slot.locator("input[type='text']:visible").first
-    if active_input.count() > 0 and not active_input.is_disabled():
-        try:
-            active_input.fill(option_regex.split("|")[0].replace("\\", ""))
-            page.wait_for_timeout(800)
-        except Exception:
-            pass
-
-    # Ищем пункт строго внутри открытого меню Vuetify 1.x (.menuable__content__active)
-    menu = page.locator(".menuable__content__active").first
-    option = menu.locator(f".v-list__tile__title:has-text('{option_regex.split('|')[0].replace(chr(92), '')}')").first
-    if option.count() == 0:
-        option = menu.locator(f"text=/{option_regex}/i").first
-
-    if option.count() > 0:
-        option.click()
-        page.wait_for_timeout(800)
+    if cb_input.count() > 0:
+        if not cb_input.is_checked():
+            label.click(force=True)
+            page.wait_for_timeout(400)
+        print(f"   [Ок] Отмечен чекбокс: {label.inner_text().strip()}")
         return True
 
-    # Закрываем меню клавишей Escape, если пункт не найден
-    page.keyboard.press("Escape")
+    label.click(force=True)
     page.wait_for_timeout(400)
-    print(f"   [Предупреждение] Пункт '{option_regex}' не найден в '{label_regex}'.")
-    return False
+    return True
 
 
 def run_export():
     ambush_date = (datetime.date.today() - datetime.timedelta(days=365)).strftime("%Y-%m-%d")
-    all_lines = []
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -152,54 +124,37 @@ def run_export():
             page.goto(EXPORT_URL, wait_until="networkidle", timeout=60000)
             page.wait_for_timeout(2000)
 
-        # Формат: Навител
-        select_vuetify_option(page, "Формат", "Навител|Navitel")
+        # 1. Отмечаем страны: Россия (RUS) и Казахстан (KAZ)
+        print("4. Выбираем страны: Россия и Казахстан...")
+        check_vuetify_checkbox(page, "Россия (RUS)")
+        check_vuetify_checkbox(page, "Казахстан (KAZ)")
 
-        # Объекты с рейтингом от: 0 (не опасная)
-        select_vuetify_option(page, "рейтингом", "0 (не опасная)|0")
+        # 2. Проверяем, что "Выбрать всё" отмечено
+        check_vuetify_checkbox(page, "Выбрать всё")
 
-        # Чекбокс "Выбрать всё" (нажимаем, только если он не отмечен)
-        select_all_label = page.locator("label:has-text('Выбрать всё')").first
-        if select_all_label.count() > 0:
-            cb_container = select_all_label.locator("xpath=ancestor::div[contains(@class,'v-input--checkbox')][1]")
-            cb_input = cb_container.locator("input[type='checkbox']").first
-            if cb_input.count() > 0 and not cb_input.is_checked():
-                select_all_label.click()
-                page.wait_for_timeout(500)
-
-        # Дата "Мобильные засады подтвержденные после"
+        # 3. Устанавливаем дату "Мобильные засады подтвержденные после" (1 год назад)
         date_input = page.locator("input[type='date'], input[value*='202']").first
         if date_input.count() > 0:
             try:
                 date_input.fill(ambush_date)
+                print(f"   [Ок] Установлена дата засад: {ambush_date}")
             except Exception:
                 pass
 
-        # Выводим все доступные поля на странице экспорта для точного понимания выбора страны
-        labels_list = page.evaluate("""() => Array.from(document.querySelectorAll('label')).map(l => l.innerText.trim()).filter(Boolean)""")
-        print("   Доступные поля на странице:", labels_list[:15])
+        # 4. Ждём, пока кнопка ЭКСПОРТ станет активной (enabled), и скачиваем базу
+        print("5. Нажимаем ЭКСПОРТ и ждём файл...")
+        export_btn = page.locator("button:has-text('ЭКСПОРТ'), button:has-text('Экспорт')").locator("visible=true").first
+        export_btn.wait_for(state="visible", timeout=15000)
+        page.wait_for_timeout(800)
 
-        # Экспортируем поочерёдно Россию и Казахстан
-        for country in ["Россия", "Казахстан"]:
-            print(f"4. Выбираем страну и скачиваем: {country}...")
-            selected = select_vuetify_option(page, "Страна", country)
-            if not selected:
-                # Если выбор страны сделан через чипы/кнопки или дерево регионов
-                country_el = page.locator(f"text=/{country}/i").locator("visible=true").first
-                if country_el.count() > 0:
-                    country_el.click()
-                    page.wait_for_timeout(800)
+        with page.expect_download(timeout=90000) as download_info:
+            export_btn.click()
 
-            export_btn = page.locator("button:has-text('ЭКСПОРТ'), button:has-text('Экспорт')").locator("visible=true").first
-            with page.expect_download(timeout=60000) as download_info:
-                export_btn.click()
-
-            download = download_info.value
-            temp_path = f"/tmp/osc_{country}.dat"
-            download.save_as(temp_path)
-            lines = parse_downloaded_file(temp_path)
-            print(f"   Скачано строк для {country}: {len(lines)}")
-            all_lines.extend(lines)
+        download = download_info.value
+        temp_path = "/tmp/osc_ru_kz.dat"
+        download.save_as(temp_path)
+        all_lines = parse_downloaded_file(temp_path)
+        print(f"   Скачано всего строк из файла ({download.suggested_filename}): {len(all_lines)}")
 
         browser.close()
 
