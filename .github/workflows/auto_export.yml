@@ -1,0 +1,42 @@
+name: Auto Export OpenSpeedcam (RU + KZ)
+
+on:
+  schedule:
+    - cron: '0 4 * * *' # Автозапуск каждый день в 04:00 UTC
+  workflow_dispatch:      # Кнопка ручного запуска во вкладке Actions
+
+permissions:
+  contents: write
+
+jobs:
+  export-and-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4
+
+      - name: Run OpenSpeedcam export
+        env:
+          OSC_LOGIN: ${{ secrets.OSC_LOGIN }}
+          OSC_PASSWORD: ${{ secrets.OSC_PASSWORD }}
+        run: python scripts/sync_openspeedcam.py
+
+      - name: Commit and push updated speedcam database
+        run: |
+          git config user.name "ApexHUD Bot"
+          git config user.email "bot@apexhud.local"
+          git add data/speedcam_ru_kz.txt
+          if git diff --staged --quiet; then
+            echo "Изменений в базе нет."
+          else
+            git commit -m "chore: auto-update OpenSpeedcam RU+KZ database"
+            git push
+          fi
