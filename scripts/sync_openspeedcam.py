@@ -81,28 +81,85 @@ def ensure_logged_in(page):
     page.wait_for_timeout(2000)
 
 
-def check_vuetify_checkbox_dom(page, label_text):
-    """Отмечает чекбокс Vuetify напрямую через DOM-событие, даже если аккордеон свёрнут."""
-    result = page.evaluate("""(targetText) => {
-        const labels = Array.from(document.querySelectorAll('label'));
-        const label = labels.find(l => (l.innerText || '').includes(targetText));
-        if (!label) return { found: false };
+def dump_page_diagnostics(page, reason=""):
+    """Печатает диагностику страницы при проблемах с поиском элементов или ожиданием."""
+    try:
+        print(f"   [Диагностика] {reason} | URL: {page.url} | TITLE: {page.title()}")
+        body_text = (page.inner_text("body") or "").strip().replace("\r", "")
+        print("   [Диагностика] TEXT (первые 1200 символов):")
+        print(body_text[:1200])
+        items = page.evaluate("""() => {
+            const out = [];
+            for (const lbl of document.querySelectorAll('label')) {
+                const txt = (lbl.innerText || '').trim().replace(/\\s+/g, ' ');
+                if (txt) out.push('LABEL: ' + txt);
+            }
+            for (const inp of document.querySelectorAll('input[type="checkbox"]')) {
+                out.push('CB: id=' + (inp.id || '') + ' name=' + (inp.name || '') + ' checked=' + inp.checked);
+            }
+            return out.slice(0, 60);
+        }""")
+        if items:
+            print("   [Диагностика] Элементы на странице:", " | ".join(items[:25]))
+    except Exception as e:
+        print(f"   [Диагностика] Ошибка при чтении состояния страницы: {e}")
 
-        const container = label.closest('.v-input--checkbox') || label.parentElement;
+
+def check_vuetify_checkbox_dom(page, keywords):
+    """Отмечает чекбокс Vuetify по списку ключевых слов (регистронезависимо)."""
+    kw_list = keywords if isinstance(keywords, (list, tuple)) else [keywords]
+    result = page.evaluate("""(kwList) => {
+        const lowerKw = kwList.map(k => (k || '').toLowerCase()).filter(Boolean);
+        const matches = (txt) => {
+            const low = (txt || '').toLowerCase();
+            return lowerKw.some(k => low.includes(k));
+        };
+
+        const labels = Array.from(document.querySelectorAll('label'));
+        let label = labels.find(l => matches(l.innerText || ''));
+
+        if (!label) {
+            const inputs = Array.from(document.querySelectorAll('input[type="checkbox"]'));
+            for (const inp of inputs) {
+                const container = inp.closest('.v-input--checkbox, .v-checkbox, .v-selection-control') || inp.parentElement;
+                const cText = container ? (container.innerText || '') : '';
+                const attrs = [inp.id, inp.name, inp.value, inp.getAttribute('aria-label')].join(' ');
+                if (matches(cText) || matches(attrs)) {
+                    label = container ? container.querySelector('label') : null;
+                    if (!inp.checked) {
+                        inp.click();
+                    }
+                    if (!inp.checked && label) {
+                        label.click();
+                    }
+                    return {
+                        found: true,
+                        checked: inp.checked,
+                        text: (label ? label.innerText : cText || attrs).trim()
+                    };
+                }
+            }
+            return { found: false };
+        }
+
+        const container = label.closest('.v-input--checkbox, .v-checkbox, .v-selection-control') || label.parentElement;
         const input = container ? container.querySelector('input[type="checkbox"]') : null;
 
         if (input) {
             if (!input.checked) {
                 input.click();
             }
-            return { found: true, checked: input.checked, text: label.innerText.trim() };
+            if (!input.checked) {
+                label.click();
+            }
+            return { found: true, checked: input.checked, text: (label.innerText || '').trim() };
         }
         label.click();
-        return { found: true, checked: true, text: label.innerText.trim() };
-    }""", label_text)
+        return { found: true, checked: true, text: (label.innerText || '').trim() };
+    }""", kw_list)
 
     if not result.get("found"):
-        print(f"   [Предупреждение] Чекбокс '{label_text}' не найден в DOM.")
+        print(f"   [Предупреждение] Чекбокс по ключам {kw_list} не найден в DOM.")
         return False
 
     page.wait_for_timeout(400)
@@ -130,13 +187,18 @@ def run_export():
             page.goto(EXPORT_URL, wait_until="networkidle", timeout=60000)
             page.wait_for_timeout(2000)
 
-        # 1. Отмечаем страны: Россия (RUS) и Казахстан (KAZ) напрямую в DOM
-        print("4. Выбираем страны: Россия и Казахстан...")
-        check_vuetify_checkbox_dom(page, "Россия (RUS)")
-        check_vuetify_checkbox_dom(page, "Казахстан (KAZ)")
+        print(f"   Текущий URL: {page.url} | Заголовок: {page.title()}")
 
-        # 2. Проверяем, что "Выбрать всё" отмечено
-        check_vuetify_checkbox_dom(page, "Выбрать всё")
+        # 1. Отмечаем страны: Россия и Казахстан
+        print("4. Выбираем страны: Россия и Казахстан...")
+        rus_ok = check_vuetify_checkbox_dom(page, ["Россия (RUS)", "Россия", "Russia", "RUS"])
+        kaz_ok = check_vuetify_checkbox_dom(page, ["Казахстан (KAZ)", "Казахстан", "Kazakhstan", "KAZ"])
+
+        # 2. Проверяем "Выбрать всё"
+        all_ok = check_vuetify_checkbox_dom(page, ["Выбрать всё", "Выбрать все", "Select all"])
+
+        if not (rus_ok or kaz_ok or all_ok):
+            dump_page_diagnostics(page, "Ни один нужный чекбокс не найден")
 
         # 3. Устанавливаем дату "Мобильные засады подтвержденные после" (1 год назад)
         date_input = page.locator("input[type='date'], input[value*='202']").first
@@ -149,12 +211,16 @@ def run_export():
 
         # 4. Ждём, пока кнопка ЭКСПОРТ разблокируется, и скачиваем файл
         print("5. Нажимаем ЭКСПОРТ и ждём файл...")
-        page.wait_for_function("""() => {
-            const btn = Array.from(document.querySelectorAll('button')).find(b => /ЭКСПОРТ/i.test(b.innerText || ''));
-            return btn && !btn.disabled;
-        }""", timeout=15000)
+        try:
+            page.wait_for_function("""() => {
+                const btn = Array.from(document.querySelectorAll('button')).find(b => /ЭКСПОРТ|EXPORT/i.test(b.innerText || ''));
+                return btn && !btn.disabled;
+            }""", timeout=60000)
+        except Exception as e:
+            dump_page_diagnostics(page, f"Таймаут ожидания активной кнопки ЭКСПОРТ: {e}")
+            raise
 
-        export_btn = page.locator("button:has-text('ЭКСПОРТ'), button:has-text('Экспорт')").locator("visible=true").first
+        export_btn = page.locator("button:has-text('ЭКСПОРТ'), button:has-text('Экспорт'), button:has-text('EXPORT')").locator("visible=true").first
         with page.expect_download(timeout=90000) as download_info:
             export_btn.click()
 
