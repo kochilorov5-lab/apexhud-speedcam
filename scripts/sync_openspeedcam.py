@@ -24,61 +24,89 @@ def parse_downloaded_file(file_path):
 
 
 def ensure_logged_in(page):
-    """Открывает модальное окно входа Vuetify и авторизуется."""
-    page.goto(EXPORT_URL, wait_until="networkidle", timeout=60000)
-    page.wait_for_timeout(2000)
+    """Открывает модальное окно входа Vuetify и авторизуется с проверкой на Server error!."""
+    last_error = None
 
-    triggers = [
-        "button:has-text('Вход')",
-        "button:has-text('Войти')",
-        "header button:has(i)",
-        ".v-toolbar button",
-    ]
+    for attempt in range(1, 4):
+        print(f"   Попытка входа #{attempt}...")
+        page.goto(EXPORT_URL, wait_until="networkidle", timeout=60000)
+        page.wait_for_timeout(2000)
 
-    for selector in triggers:
-        if page.locator("input[type='password']:visible").count() > 0:
-            break
-        loc = page.locator(selector)
-        for i in range(loc.count()):
-            el = loc.nth(i)
-            if el.is_visible():
-                try:
-                    el.click(timeout=1500)
-                    page.wait_for_timeout(800)
-                    if page.locator("input[type='password']:visible").count() > 0:
-                        break
-                    menu_login = page.locator("text=/Вход|Войти|Login/i").locator("visible=true").first
-                    if menu_login.count() > 0:
-                        menu_login.click(timeout=1500)
+        triggers = [
+            "button:has-text('Вход')",
+            "button:has-text('Войти')",
+            "header button:has(i)",
+            ".v-toolbar button",
+        ]
+
+        for selector in triggers:
+            if page.locator("input[type='password']:visible").count() > 0:
+                break
+            loc = page.locator(selector)
+            for i in range(loc.count()):
+                el = loc.nth(i)
+                if el.is_visible():
+                    try:
+                        el.click(timeout=1500)
                         page.wait_for_timeout(800)
                         if page.locator("input[type='password']:visible").count() > 0:
                             break
-                except Exception:
-                    pass
+                        menu_login = page.locator("text=/Вход|Войти|Login/i").locator("visible=true").first
+                        if menu_login.count() > 0:
+                            menu_login.click(timeout=1500)
+                            page.wait_for_timeout(800)
+                            if page.locator("input[type='password']:visible").count() > 0:
+                                break
+                    except Exception:
+                        pass
 
-    if page.locator("input[type='password']:visible").count() == 0:
-        hidden_login = page.locator("text=/Вход|Войти|Login/i").first
-        if hidden_login.count() > 0:
-            hidden_login.evaluate("el => el.click()")
-            page.wait_for_timeout(1200)
+        if page.locator("input[type='password']:visible").count() == 0:
+            hidden_login = page.locator("text=/Вход|Войти|Login/i").first
+            if hidden_login.count() > 0:
+                hidden_login.evaluate("el => el.click()")
+                page.wait_for_timeout(1200)
 
-    if page.locator("input[type='password']:visible").count() == 0:
-        raise RuntimeError(f"Не удалось открыть окно входа. Текущий URL: {page.url}")
+        if page.locator("input[type='password']:visible").count() == 0:
+            last_error = f"Не удалось открыть окно входа. Текущий URL: {page.url}"
+            page.wait_for_timeout(3000)
+            continue
 
-    print("2. Вводим логин и пароль...")
-    dialog = page.locator(".v-dialog--active, .v-dialog:visible").first
-    scope = dialog if dialog.count() > 0 else page
+        print("2. Вводим логин и пароль...")
+        dialog = page.locator(".v-dialog--active, .v-dialog:visible").first
+        scope = dialog if dialog.count() > 0 else page
 
-    user_input = scope.locator("input:not([type='password']):not([type='hidden']):not([type='checkbox']):visible").first
-    pass_input = scope.locator("input[type='password']:visible").first
+        user_input = scope.locator("input:not([type='password']):not([type='hidden']):not([type='checkbox']):visible").first
+        pass_input = scope.locator("input[type='password']:visible").first
 
-    user_input.fill(LOGIN)
-    pass_input.fill(PASSWORD)
+        user_input.fill(LOGIN)
+        pass_input.fill(PASSWORD)
 
-    submit_btn = scope.locator("button[type='submit']:visible, button:has-text('Войти'):visible, button:has-text('Вход'):visible").first
-    submit_btn.click()
-    page.wait_for_load_state("networkidle", timeout=30000)
-    page.wait_for_timeout(2000)
+        submit_btn = scope.locator("button[type='submit']:visible, button:has-text('Войти'):visible, button:has-text('Вход'):visible, button:has-text('ВХОД'):visible").first
+        submit_btn.click()
+
+        try:
+            page.wait_for_load_state("networkidle", timeout=20000)
+        except Exception:
+            pass
+        page.wait_for_timeout(2500)
+
+        body_text = (page.inner_text("body") or "")
+        if "Server error!" in body_text:
+            last_error = f"OpenSpeedcam вернул 'Server error!' при входе (попытка #{attempt}). URL: {page.url}"
+            print(f"   [Ошибка] {last_error}")
+            page.wait_for_timeout(4000)
+            continue
+
+        if "_modal=login" in page.url or page.locator("input[type='password']:visible").count() > 0:
+            last_error = f"Авторизация не завершилась, окно входа всё ещё открыто. URL: {page.url}"
+            print(f"   [Ошибка] {last_error}")
+            page.wait_for_timeout(3000)
+            continue
+
+        print("   [Ок] Авторизация прошла успешно.")
+        return
+
+    raise RuntimeError(last_error or "Не удалось авторизоваться на OpenSpeedcam.")
 
 
 def dump_page_diagnostics(page, reason=""):
@@ -86,8 +114,8 @@ def dump_page_diagnostics(page, reason=""):
     try:
         print(f"   [Диагностика] {reason} | URL: {page.url} | TITLE: {page.title()}")
         body_text = (page.inner_text("body") or "").strip().replace("\r", "")
-        print("   [Диагностика] TEXT (первые 1200 символов):")
-        print(body_text[:1200])
+        print("   [Диагностика] TEXT (первые 800 символов):")
+        print(body_text[:800])
         items = page.evaluate("""() => {
             const out = [];
             for (const lbl of document.querySelectorAll('label')) {
@@ -189,18 +217,14 @@ def run_export():
 
         print(f"   Текущий URL: {page.url} | Заголовок: {page.title()}")
 
-        # 1. Отмечаем страны: Россия и Казахстан
         print("4. Выбираем страны: Россия и Казахстан...")
         rus_ok = check_vuetify_checkbox_dom(page, ["Россия (RUS)", "Россия", "Russia", "RUS"])
         kaz_ok = check_vuetify_checkbox_dom(page, ["Казахстан (KAZ)", "Казахстан", "Kazakhstan", "KAZ"])
-
-        # 2. Проверяем "Выбрать всё"
         all_ok = check_vuetify_checkbox_dom(page, ["Выбрать всё", "Выбрать все", "Select all"])
 
         if not (rus_ok or kaz_ok or all_ok):
             dump_page_diagnostics(page, "Ни один нужный чекбокс не найден")
 
-        # 3. Устанавливаем дату "Мобильные засады подтвержденные после" (1 год назад)
         date_input = page.locator("input[type='date'], input[value*='202']").first
         if date_input.count() > 0:
             try:
@@ -209,7 +233,6 @@ def run_export():
             except Exception:
                 pass
 
-        # 4. Ждём, пока кнопка ЭКСПОРТ разблокируется, и скачиваем файл
         print("5. Нажимаем ЭКСПОРТ и ждём файл...")
         try:
             page.wait_for_function("""() => {
